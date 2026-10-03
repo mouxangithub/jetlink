@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -62,6 +63,11 @@ class ServerController(private val context: Context, private val scope: Coroutin
 
     /** Starts the server with [settings], restarting one that runs. */
     suspend fun start(settings: SettingsValues) = lifecycle.withLock {
+        if (!Native.loaded) {
+            // a build without the Swift server: refuse in the UI, never crash
+            run.value = RunState.Failed("libjetlink.so is missing from this build; rebuild it with the Swift server.")
+            return@withLock
+        }
         run.value = RunState.Starting
         // the server stops one that runs first
         val error = withContext(Dispatchers.IO) { Native.start(config(settings).toString()) }
@@ -77,7 +83,9 @@ class ServerController(private val context: Context, private val scope: Coroutin
     }
 
     suspend fun stop() = lifecycle.withLock {
-        withContext(Dispatchers.IO) { Native.stop() }
+        if (Native.loaded) {
+            withContext(Dispatchers.IO) { Native.stop() }
+        }
         run.value = RunState.Stopped
     }
 
@@ -94,6 +102,8 @@ class ServerController(private val context: Context, private val scope: Coroutin
         put("preload", true)
         put("chip", Chip.model)
         put("native_library_dir", context.applicationInfo.nativeLibraryDir)
+        // The mirror bases the model catalog and the LFS requests try first.
+        put("mirrors", buildJsonArray { settings.mirrors.forEach { add(JsonPrimitive(it)) } })
     }
 
     /** Follows the snapshot and the log for as long as the app runs. */
