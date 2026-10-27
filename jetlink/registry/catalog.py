@@ -168,21 +168,24 @@ def fetch_catalog(url: str = CATALOG_URL, timeout: float = CATALOG_TIMEOUT, open
   model manager's own catalog fetch has the same fallback. A 404 is a
   NotFound without trying the mirror - a file the server says is not there
   is not there, and the version probe relies on that; every other failure
-  tries the mirror before giving up, as a NetworkError."""
+  tries the mirror before giving up, as a NetworkError. Each candidate is
+  tried twice: CDNs and middleboxes occasionally serve a mangled body, and
+  one retry has been enough to get clean bytes."""
   candidates = [url]
   fallback = jsdelivr_fallback(url)
   if fallback:
     candidates.append(fallback)
   last: Exception | None = None
   for i, candidate in enumerate(candidates):
-    try:
-      return http_json(candidate, timeout, opener)
-    except NotFound:
-      if i == 0:
-        raise
-      raise NotFound(str(last)) from last
-    except NetworkError as e:
-      last = e
+    for attempt in range(2):
+      try:
+        return http_json(candidate, timeout, opener)
+      except NotFound:
+        if i == 0 and attempt == 0:
+          raise
+        raise NotFound(str(last)) from last
+      except NetworkError as e:
+        last = e
   raise last
 
 
