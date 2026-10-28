@@ -1,4 +1,12 @@
 <!-- Each release: a "Jetlink vX.Y.Z" heading underlined with =, newest first. A release that changes the fork contract ends with a **Forks** group (docs/publishing.md). -->
+Jetlink v0.8.10
+===============
+**General Updates & Fixes**
+* Fixed high CPU use on a Mac, iPhone or iPad while a comma is connected but not driving.
+
+**Forks**
+* API stays 3. New: the optional `ModelSide.model_warp()`, for a fork whose runtime cannot load openpilot's warp; move its output with `warp.make_coherent` before the JIT first runs.
+
 Jetlink v0.8.9
 ==============
 **Models**
