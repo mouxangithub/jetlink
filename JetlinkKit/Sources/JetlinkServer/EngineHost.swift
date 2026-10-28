@@ -473,7 +473,7 @@ public final class EngineHost: @unchecked Sendable {
     else { return false }
     do {
       try Self.stageZeros(loaded.staging, spec: loaded.spec)
-      try loaded.engine.run()
+      try loaded.engine.runIdle()
     } catch {
       warmFailed = true
       log.error("stopped keeping the engine warm between sessions: \(String(describing: error))")

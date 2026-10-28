@@ -54,6 +54,9 @@ public protocol Engine: AnyObject {
   func loopState(_ pairs: [(input: String, output: String)]) throws
   func resetState()
   func run() throws
+  /// One run between sessions (`EngineHost.warmIfIdle`): the model alone,
+  /// without what keeps the clocks up beside a comma's frames.
+  func runIdle() throws
   func warm() throws -> String
   /// Logs the engine's own timing so far: a benchmark's end.
   func flushTiming()
@@ -85,6 +88,7 @@ extension Engine {
   public var notes: String { "" }
   public var accelerator: String { "" }
   public var coolsWhenIdle: Bool { false }
+  public func runIdle() throws { try run() }
   public func flushTiming() {}
 }
 

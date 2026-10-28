@@ -156,6 +156,10 @@ open class EngineCore: Engine, @unchecked Sendable {
     lastGpuUs = UInt32(min(UInt64(UInt32.max), lastRunNanoseconds / 1000))
   }
 
+  open func runIdle() throws {
+    try run()
+  }
+
   /// The engine's own work for one `run()`.
   open func execute() throws {
     preconditionFailure("\(type(of: self)) does not execute")

@@ -224,9 +224,11 @@ struct ServerTests {
     try serve(backend: FlakyBackend(coolsWhenIdle: true)) { server, client in
       _ = try client.ensureEngine(model: golden.model, sha256: golden.sha256)
       let host = server.host
+      let engine = try #require(host.lock.withLock { host.loaded?.engine as? FailingEngine })
       let seen = ProcessInfo.processInfo.systemUptime
       #expect(!host.warmIfIdle(now: seen + EngineHost.warmIdleAfter / 2), "a comma seen just now may be about to send a frame")
       #expect(host.warmIfIdle(now: seen + EngineHost.warmIdleAfter + 1))
+      #expect(host.lock.withLock { engine.idleRuns } == 1, "the model alone, keeping no clocks up as a frame does")
       #expect(host.warmIfIdle(now: seen + EngineHost.warmFor + 5), "a comma still connected is backing off mid-drive")
       // the warm run left nothing in the history the comma's frames meet
       #expect(try client.replay(golden).frames == 8)

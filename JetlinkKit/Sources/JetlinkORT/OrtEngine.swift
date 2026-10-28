@@ -171,6 +171,13 @@ public final class OrtEngine: EngineCore, @unchecked Sendable {
     hint?.report(lastRunNanoseconds)
   }
 
+  /// No keep-warm or keep-alive: pulsed by every warm run between sessions
+  /// they never stop, and a comma left connected with nothing to send kept a
+  /// core spinning and the GPU busy.
+  public override func runIdle() throws {
+    try super.run()
+  }
+
   public override func execute() throws {
     for binding in bindings[parity] {
       try binding.run()

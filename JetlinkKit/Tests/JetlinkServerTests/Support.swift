@@ -116,6 +116,8 @@ final class FailingEngine: Engine {
   let inner: any Engine
   let coolsWhenIdle: Bool
   let failure: () -> (any Error)?
+  /// Warm runs between sessions so far, counted under the host's lock.
+  private(set) var idleRuns = 0
 
   init(_ inner: any Engine, coolsWhenIdle: Bool = false, failure: @escaping () -> (any Error)?) {
     self.inner = inner
@@ -136,6 +138,12 @@ final class FailingEngine: Engine {
   func run() throws {
     if let failure = failure() { throw failure }
     try inner.run()
+  }
+
+  func runIdle() throws {
+    idleRuns += 1
+    if let failure = failure() { throw failure }
+    try inner.runIdle()
   }
 }
 
