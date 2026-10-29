@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
-from jetlink.registry.catalog import EXTRA_CATALOG_URL, NetworkError, RegistryError, VerifyError, parse_catalog
+from jetlink.registry.catalog import EXTRA_CATALOG_URL, NetworkError, NotFound, RegistryError, VerifyError, parse_catalog
 from jetlink.registry.lfs import (COMMIT_PATCH_URL, DRIVING_MODELS_TREE_URL, LFS_ENDPOINTS, POINTER_URL, PULL_PATCH_URL, Pointer,
-                                  diff_pointer, fetch_pointer, lfs_download, lfs_resolve, parse_pointer_text)
+                                  diff_pointer, fetch_pointer, fetch_size, lfs_download, lfs_resolve, parse_pointer_text)
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 REF = 'f877d7a0ccc3cce943c76e285214c020cd65c899'
@@ -39,9 +39,10 @@ def fixture(name: str) -> bytes:
 
 
 class FakeResponse:
-  def __init__(self, data: bytes, status: int = 200):
+  def __init__(self, data: bytes, status: int = 200, headers: dict | None = None):
     self._buf = io.BytesIO(data)
     self.status = status
+    self.headers = headers or {}
 
   def read(self, n: int = -1) -> bytes:
     return self._buf.read(n if n is not None and n >= 0 else -1)
@@ -75,6 +76,8 @@ class FakeOpener:
       raise body
     if callable(body):
       body = body()
+    if isinstance(body, FakeResponse):
+      return body
     return FakeResponse(body if isinstance(body, bytes) else json.dumps(body).encode())
 
 
@@ -249,6 +252,39 @@ def test_lfs_resolve_is_none_when_the_server_lacks_it_or_is_down():
   missing = FakeOpener({f"{LFS_ENDPOINTS[0]}/objects/batch": fixture('lfs_batch_missing.json')})
   assert lfs_resolve(LFS_ENDPOINTS[0], Pointer(OID, SIZE), opener=missing) is None
   assert lfs_resolve(LFS_ENDPOINTS[0], Pointer(OID, SIZE), opener=FakeOpener({})) is None
+
+
+def sized(*answers, endpoint=LFS_ENDPOINTS[0]):
+  """An opener where `endpoint` has OID, and its download answers the first byte with `answers`."""
+  batch = {'objects': [{'oid': OID, 'size': 1, 'actions': {'download': {'href': HREF}}}]}
+  return FakeOpener({f"{endpoint}/objects/batch": batch, HREF: FakeResponse(b'o', *answers)})
+
+
+def test_fetch_size_reads_the_total_off_the_first_byte():
+  # a hash is all StarPilot's catalog knows; the size comes from the download itself
+  opener = sized(206, {'Content-Range': f'bytes 0-0/{SIZE}'})
+  assert fetch_size(OID, opener=opener) == Pointer(OID, SIZE)
+  assert opener.calls == [f"{LFS_ENDPOINTS[0]}/objects/batch", HREF]
+
+
+def test_fetch_size_takes_the_length_from_a_server_that_ignores_the_range():
+  assert fetch_size(OID, opener=sized(200, {'Content-Length': str(SIZE)})) == Pointer(OID, SIZE)
+
+
+def test_fetch_size_asks_each_lfs_server_in_turn():
+  # the exports behind a precompiled pkl are only on comma's model repo
+  opener = sized(206, {'Content-Range': f'bytes 0-0/{SIZE}'}, endpoint=LFS_ENDPOINTS[2])
+  assert fetch_size(OID, opener=opener).size == SIZE
+
+
+def test_fetch_size_is_not_found_when_no_server_has_it():
+  with pytest.raises(NotFound):
+    fetch_size(OID, opener=FakeOpener({}))
+
+
+def test_fetch_size_will_not_guess_a_size_it_was_not_told():
+  with pytest.raises(NetworkError):
+    fetch_size(OID, opener=sized(206, {}))
 
 
 # --- download ----------------------------------------------------------------

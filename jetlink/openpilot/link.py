@@ -228,12 +228,15 @@ def identity(parts, entry: dict) -> tuple[str, int]:
   """The picked model's sha256 and byte count, from the catalog model's LFS
   pointer, so the comma can name the model without holding or hashing the
   ONNX. Looked up once per model ever and kept in a param: the one part of
-  provisioning that needs the internet."""
+  provisioning that needs the internet. A model picked by its hash alone is
+  only sized."""
   sha256, nbytes = entry.get('oid'), entry.get('size')
   if sha256 and nbytes:
     return sha256, int(nbytes)
   parts.progress.report('connect', 0.0, 'finding model', code='finding_model')
-  return parts.models.resolve_pointer(entry['ref'])
+  if entry.get('ref'):
+    return parts.models.resolve_pointer(entry['ref'])
+  return parts.models.resolve_size(sha256)
 
 
 # What has already been hashed in this process, keyed on the file as it was

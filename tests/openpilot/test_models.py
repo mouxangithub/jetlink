@@ -9,6 +9,8 @@ catalog and pick as the fork's adapter hands them over, the pointer at the
 commit, the file on disk, and the newer catalogs folded in.
 """
 import dataclasses
+import os
+import time
 import unittest
 import urllib.request
 from unittest import mock
@@ -23,6 +25,7 @@ def bundle(ref: str, name: str, index: int = 0, version=19) -> dict:
 
 
 REF_A, REF_B, REF_C = 'a' * 40, 'b' * 40, 'c' * 40
+SHA_D = 'd' * 64
 POINTERS = {REF_A: {'oid': '1' * 64, 'size': 766_000_000},
             REF_B: {'oid': '2' * 64, 'size': 1_757_000_000}}
 
@@ -34,6 +37,20 @@ class ModelsTest(OpenpilotTest):
 
   def catalog(self, *bundles):
     self.op.store['ModelManager_ModelsCache_Chestnut'] = {'bundles': list(bundles)}
+
+  def write_slot(self, ago, **slot):
+    """A pick in the comma's list `ago` seconds ago: the slot and its file, as Params writes them."""
+    key = self.op.keys.big_model
+    self.op.store[key] = slot
+    path = self.op.store_dir / key
+    path.write_text('{}')
+    at = time.time() - ago
+    os.utime(path, (at, at))
+    self.models._slot_cache = None
+
+  def hear_pick(self, ago, **pick):
+    """A hello from a server whose pick was made `ago` seconds ago."""
+    return self.models.heard({'pick': {**pick, 'age_s': ago, 'by': 'here'}})
 
 
 class TestCatalog(ModelsTest):
@@ -184,7 +201,7 @@ class TestSelectedModel(ModelsTest):
   ]
 
   def select_with(self, slot_ref, default=REF_B, index=None, known=None):
-    pick = {'name': 'Picked', 'ref': slot_ref} if slot_ref else None
+    pick = {'name': 'Picked', 'ref': slot_ref, 'sha256': None} if slot_ref else None
     with mock.patch.object(self.models, '_index', return_value=(self.INDEX if index is None else index, known or {})), \
          mock.patch.object(models, 'DEFAULT_BIG_MODEL_REF', default), \
          mock.patch.object(self.models, 'selected_slot', return_value=pick):
@@ -243,19 +260,10 @@ class TestPicksOnBothEnds(ModelsTest):
     self.op.store['JetlinkModelPointers'] = dict(POINTERS)
 
   def pick_here(self, ref, name, ago):
-    """A pick in the comma's list `ago` seconds ago: the slot and its file, as the model manager writes them."""
-    import os
-    import time
-    self.op.store[self.SLOT] = {'ref': ref, 'displayName': name}
-    path = self.op.store_dir / self.SLOT
-    path.write_text('{}')
-    at = time.time() - ago
-    os.utime(path, (at, at))
-    self.models._slot_cache = None
+    self.write_slot(ago, ref=ref, displayName=name)
 
   def hear(self, ref, ago, sha256='2' * 64, nbytes=1_757_000_000, name='Beta on the server'):
-    return self.models.heard({'pick': {'ref': ref, 'sha256': sha256, 'nbytes': nbytes, 'name': name,
-                                       'age_s': ago, 'by': 'here'}})
+    return self.hear_pick(ago, ref=ref, sha256=sha256, nbytes=nbytes, name=name)
 
   def test_the_hello_carries_our_pick_and_its_age(self):
     self.pick_here(REF_A, 'Alpha', ago=30)
@@ -289,7 +297,6 @@ class TestPicksOnBothEnds(ModelsTest):
 
   def test_another_process_reads_the_owners_record(self):
     # the UI says no hello: it goes by what the owner kept of the last one
-    import time
     from jetlink.comma import gadget
     self.pick_here(REF_A, 'Alpha', ago=600)
     gadget.write_record(gadget.SERVER, {'pick': {'ref': REF_B, 'sha256': '2' * 64, 'nbytes': 5, 'at': time.time() - 60}})
@@ -339,6 +346,110 @@ class TestPicksOnBothEnds(ModelsTest):
     self.models.adopt()
     self.assertNotIn('ModelManager_DownloadRef', self.op.store)
     self.assertEqual(self.models.selected_model()['ref'], REF_B)
+    # the slot is the model manager's, never written over
+    self.assertEqual(self.op.store[self.SLOT]['ref'], REF_A)
+
+
+class TestPicksByHash(ModelsTest):
+  """StarPilot's shape: a picker of its own whose catalog knows a model by its
+  ONNX's hash alone, no catalog for jetlink and no model manager to ask. The
+  pick names its model by the hash, is sized from comma's LFS servers, and a
+  newer pick on the server is written into the slot so the picker shows it."""
+
+  SLOT = 'JetlinkModel'
+
+  def setUp(self):
+    super().setUp()
+    self.op.keys = dataclasses.replace(self.op.keys, big_model=self.SLOT, catalog=None, select=None)
+
+  def pick_here(self, sha256, name, ago):
+    self.write_slot(ago, sha256=sha256, displayName=name)
+
+  def hear(self, ref, sha256, ago, nbytes=None, name='On the server'):
+    return self.hear_pick(ago, ref=ref, sha256=sha256, nbytes=nbytes, name=name)
+
+  def test_the_hash_is_its_identity(self):
+    self.pick_here(SHA_D, 'Delta', ago=60)
+    self.assertEqual(self.models.selected_model(), {'name': 'Delta', 'ref': None, 'oid': SHA_D, 'size': None})
+
+  def test_it_is_sized_once_and_kept(self):
+    self.pick_here(SHA_D, 'Delta', ago=60)
+    with mock.patch.object(self.models, 'fetch_size', return_value=(SHA_D, 792_487_890)) as fetch:
+      self.assertEqual(self.models.resolve_size(SHA_D), (SHA_D, 792_487_890))
+      self.assertEqual(self.models.resolve_size(SHA_D), (SHA_D, 792_487_890))
+    fetch.assert_called_once_with(SHA_D)
+    self.assertEqual(self.models.pointers()[SHA_D], {'oid': SHA_D, 'size': 792_487_890})
+    self.models._index_cache = None
+    self.assertEqual(self.models.selected_model()['size'], 792_487_890)
+
+  def test_it_is_sized_by_the_servers_a_download_asks(self):
+    from jetlink.registry.lfs import Pointer
+    with mock.patch('jetlink.registry.lfs.fetch_size', return_value=Pointer(SHA_D, 5)) as fetch:
+      self.assertEqual(self.models.fetch_size(SHA_D), (SHA_D, 5))
+    fetch.assert_called_once_with(SHA_D, self.models.lfs_endpoints(), timeout=models.POINTER_TIMEOUT)
+
+  def test_the_hello_carries_it(self):
+    self.pick_here(SHA_D, 'Delta', ago=30)
+    self.op.store['JetlinkModelPointers'] = {SHA_D: {'oid': SHA_D, 'size': 7}}
+    pick = self.models.hello_pick()
+    self.assertEqual({k: pick[k] for k in ('ref', 'sha256', 'nbytes', 'name')},
+                     {'ref': None, 'sha256': SHA_D, 'nbytes': 7, 'name': 'Delta'})
+
+  def test_the_same_model_picked_later_on_the_server_is_not_another(self):
+    # the server names it by the ref its catalog has; the hash says it is ours
+    self.pick_here(SHA_D, 'Delta', ago=600)
+    self.hear(REF_B, SHA_D, ago=60, nbytes=7)
+    self.models.adopt()
+    self.assertEqual(self.op.store[self.SLOT], {'sha256': SHA_D, 'displayName': 'Delta'})
+    # the server's size is kept under the hash, so ours needs no lookup
+    self.assertEqual(self.models.selected_model(), {'name': 'Delta', 'ref': None, 'oid': SHA_D, 'size': 7})
+
+  def test_a_newer_pick_on_the_server_is_written_into_the_slot(self):
+    self.pick_here(SHA_D, 'Delta', ago=600)
+    self.hear(REF_B, '2' * 64, ago=60, nbytes=20, name='Beta')
+    self.models.adopt()
+    self.assertEqual(self.op.store[self.SLOT], {'displayName': 'Beta', 'ref': REF_B, 'sha256': '2' * 64})
+    self.assertTrue(self.op.log.has('was picked on the server'))
+    # its pointer is kept, and from now on it is our pick, made just now
+    self.assertEqual(self.models.pointers()[REF_B], {'oid': '2' * 64, 'size': 20})
+    (self.op.store_dir / self.SLOT).write_text('{}')
+    self.assertIsNone(self.models._newer_server_pick())
+    self.assertEqual(self.models.selected_model(), {'name': 'Beta', 'ref': REF_B, 'oid': '2' * 64, 'size': 20})
+
+  def test_with_no_pick_here_the_servers_is_written_too(self):
+    self.hear(None, '9' * 64, ago=6000, name='My export')
+    self.models.adopt()
+    self.assertEqual(self.op.store[self.SLOT], {'displayName': 'My export', 'sha256': '9' * 64})
+
+  def test_an_older_pick_on_the_server_writes_nothing(self):
+    self.pick_here(SHA_D, 'Delta', ago=60)
+    self.hear(REF_B, '2' * 64, ago=600, nbytes=20)
+    self.models.adopt()
+    self.assertEqual(self.op.store[self.SLOT], {'sha256': SHA_D, 'displayName': 'Delta'})
+
+  def test_a_server_pick_named_by_its_hash_alone_is_sized_here(self):
+    self.hear(None, SHA_D, ago=60, name='Delta')
+    self.assertEqual(self.models.selected_model(), {'name': 'Delta', 'ref': None, 'oid': SHA_D, 'size': None})
+    self.op.store['JetlinkModelPointers'] = {SHA_D: {'oid': SHA_D, 'size': 7}}
+    self.models._index_cache = None
+    self.assertEqual(self.models.selected_model()['size'], 7)
+
+  def test_it_is_provisioned_by_its_hash(self):
+    from jetlink.openpilot import provision
+    self.pick_here(SHA_D, 'Delta', ago=60)
+    client = mock.Mock()
+    client.hello.return_value = {}
+    client.ensure_engine.return_value = mock.Mock(sha256=SHA_D, to_dict=lambda: {'sha256': SHA_D})
+    run = provision.ProvisioningRun(self.parts)
+    run.client = client
+    with mock.patch.object(self.models, 'fetch_size', return_value=(SHA_D, 792_487_890)) as fetch:
+      self.assertTrue(run.provision())
+    fetch.assert_called_once_with(SHA_D)
+    self.assertEqual(client.ensure_engine.call_args.args[:2], (SHA_D, 792_487_890))
+    # the server downloads it by the hash and size, with no ref to go by
+    self.assertTrue(client.ensure_engine.call_args.kwargs['fetch'])
+    self.assertIsNone(client.ensure_engine.call_args.kwargs['ref'])
+    self.assertTrue(self.parts.spec.engine_ready_for(SHA_D))
 
 
 class TestWithoutAModelManager(ModelsTest):
@@ -428,17 +539,22 @@ class TestSelectedSlot(ModelsTest):
     assert read.call_count == 1
 
   def test_reads_the_slots_ref_and_name(self):
-    assert self.read_with({'ref': REF_A, 'displayName': 'Alpha'}) == {'name': 'Alpha', 'ref': REF_A}
-    assert self.read_with({'ref': REF_A}) == {'name': REF_A[:10], 'ref': REF_A}
+    assert self.read_with({'ref': REF_A, 'displayName': 'Alpha'}) == {'name': 'Alpha', 'ref': REF_A, 'sha256': None}
+    assert self.read_with({'ref': REF_A}) == {'name': REF_A[:10], 'ref': REF_A, 'sha256': None}
+
+  def test_a_pick_named_by_its_hash(self):
+    # StarPilot's catalog knows a model by its ONNX's hash alone
+    assert self.read_with({'sha256': SHA_D, 'displayName': 'Delta'}) == {'name': 'Delta', 'ref': None, 'sha256': SHA_D}
+    assert self.read_with({'sha256': SHA_D}) == {'name': SHA_D[:10], 'ref': None, 'sha256': SHA_D}
 
   def test_anything_else_is_no_pick(self):
-    for slot in (None, {}, {'ref': ''}, {'ref': 7}, 'junk'):
+    for slot in (None, {}, {'ref': ''}, {'ref': 7}, {'sha256': 'D' * 64}, {'sha256': 'd' * 40}, 'junk'):
       assert self.read_with(slot) is None, slot
 
   def test_the_slot_is_the_key_the_adapter_names(self):
     self.op.keys = dataclasses.replace(self.op.keys, big_model='SomeOtherForksSlot')
     self.op.store['SomeOtherForksSlot'] = {'ref': REF_B}
-    assert self.read_with({'ref': REF_A}) == {'name': REF_B[:10], 'ref': REF_B}
+    assert self.read_with({'ref': REF_A}) == {'name': REF_B[:10], 'ref': REF_B, 'sha256': None}
 
 
 class TestShippedModelPath(ModelsTest):

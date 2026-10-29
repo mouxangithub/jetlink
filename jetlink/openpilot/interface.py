@@ -45,10 +45,13 @@ class Keys:
   offroad: str                   # BOOL: is the car parked (manager's IsOffroad)
   progress: str                  # JSON {stage, frac, msg, drops}: provisioning and join progress
   spec: str                      # JSON: the built model's spec and whether its engine is built
-  pointers: str                  # JSON: catalog ref -> {oid, size}
+  pointers: str                  # JSON: catalog ref, or a hash-named pick's sha256 -> {oid, size}
   # sunnypilot's model manager: the big-model pick, JSON {ref, displayName},
   # and the big-model catalog, JSON {bundles}. Without one both are None, and
-  # jetlink runs its own default big model, or the one picked on the server
+  # jetlink runs its own default big model, or the one picked on the server.
+  # A fork with a picker of its own and no catalog (StarPilot) declares only
+  # big_model, and may name its pick by the ONNX's hash, {sha256,
+  # displayName}; a newer pick made on the server is written into it
   big_model: str | None = None
   catalog: str | None = None
   # BOOL: an iPhone on a direct cable is asked to charge from the comma
