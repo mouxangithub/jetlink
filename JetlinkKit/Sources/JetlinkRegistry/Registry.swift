@@ -333,7 +333,17 @@ public final class Registry: Sendable {
     progress: @escaping @Sendable (Double) -> Void = { _ in },
     shouldStop: @escaping @Sendable () -> Bool = { false }
   ) async throws(RegistryError) -> URL {
-    let pointer = try await pointer(for: refOrSHA256)
+    try await fetch(pointer: try await pointer(for: refOrSHA256), progress: progress, shouldStop: shouldStop)
+  }
+
+  /// `fetch(_:)` for a pointer known already: the comma names its model by
+  /// the oid and size its own lookup found, whether or not this registry has
+  /// resolved that ref.
+  public func fetch(
+    pointer: Pointer,
+    progress: @escaping @Sendable (Double) -> Void = { _ in },
+    shouldStop: @escaping @Sendable () -> Bool = { false }
+  ) async throws(RegistryError) -> URL {
     let dest = try layout.modelPath(sha256: pointer.oid)
     if let status = Files.status(dest), status.isFile, status.size == pointer.size {
       return dest

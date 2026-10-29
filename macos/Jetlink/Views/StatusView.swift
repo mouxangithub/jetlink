@@ -192,7 +192,7 @@ struct StatusView: View {
           Label("No model in use", systemImage: "shippingbox")
             .font(.headline)
           Text(
-            "Use the model your comma drives with, and leave Jetlink running. Otherwise the comma sends its model when it connects, and drives on its small model until the Mac is ready."
+            "Use a model here and the comma drives with it too. Otherwise the Mac downloads the comma's pick when it connects, and the comma drives on its small model until the Mac is ready."
           )
           .font(.callout)
           .foregroundStyle(.secondary)

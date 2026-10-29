@@ -1,5 +1,6 @@
 import Foundation
 import JetlinkKit
+import JetlinkRegistry
 import JetlinkTestSupport
 import Testing
 
@@ -15,6 +16,8 @@ final class FakeRegistry: ModelRegistry, @unchecked Sendable {
   let size: Int64
   private let lock = NSLock()
   private(set) var fetches = 0
+  /// What the next fetches throw, as a registry with no internet does.
+  var failing: RegistryError?
 
   init(cache: URL, golden: Golden) throws {
     self.cache = cache
@@ -35,14 +38,18 @@ final class FakeRegistry: ModelRegistry, @unchecked Sendable {
   func catalog(refresh: Bool, maxAge: TimeInterval) async -> CatalogEvent { catalogEvent }
   func resolveMissingPointers(_ refs: [String]) async {}
   func ref(for sha256: String) -> String? { sha256 == self.sha256 ? FakeRegistry.ref : nil }
+  func name(for sha256: String) -> (name: String?, ref: String?) { sha256 == self.sha256 ? ("Tiny", FakeRegistry.ref) : (nil, nil) }
 
   func resolvePointer(ref: String) async throws -> (sha256: String, size: Int64) {
     guard ref == FakeRegistry.ref else { throw TestError("unknown ref") }
     return (sha256, size)
   }
 
-  func fetch(_ refOrSHA256: String, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws -> URL {
+  func fetch(sha256: String, size: Int64, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws
+    -> URL
+  {
     lock.withLock { fetches += 1 }
+    if let failing { throw failing }
     let destination = cache.appending(path: "models/\(sha256.prefix(16)).onnx")
     progress(0.5)
     try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -177,6 +184,99 @@ struct ControllerTests {
       let reply = await controller.handle(command)
       #expect(!reply.ok)
       #expect(!(reply.error ?? "").isEmpty)
+    }
+  }
+
+  // MARK: a model neither end has
+
+  @Test("Use Model is a pick here, by the row chosen")
+  func useIsAPick() async throws {
+    try await withController { controller, registry, log in
+      _ = await controller.handle(.prepare(sha256: registry.sha256, frameSkip: 4, ref: FakeRegistry.ref))
+      let pick = try #require(controller.server.host.picks.current())
+      #expect(pick.sha256 == registry.sha256 && pick.ref == FakeRegistry.ref && pick.by == "here")
+      #expect(pick.nbytes == registry.size)
+    }
+  }
+
+  @Test("A comma's request for a model it has not got either is downloaded here, then prepared for it")
+  func fetchesForTheComma() async throws {
+    try await withController { controller, registry, log in
+      let port = try #require(controller.server.port)
+      let (first, stages, last, served) = try await offThePool {
+        let client = try TestClient(port: port)
+        defer { client.close() }
+        _ = try client.hello()
+        try client.sendJSON(
+          .engineReq, ["sha256": registry.sha256, "nbytes": registry.size, "frame_skip": 4, "fetch": true, "ref": FakeRegistry.ref])
+        let first = try client.recv(.engineResp).json["state"] as? String
+        var stages: [String] = []
+        while true {
+          let reply = try client.recv()
+          if reply.type == Wire.Msg.progress.rawValue {
+            stages.append(reply.json["stage"] as? String ?? "")
+            continue
+          }
+          let state = reply.json["state"] as? String
+          if state != "building" && state != "downloading" {
+            return (first, stages, state, (reply.json["spec"] as? [String: Any])?["sha256"] as? String)
+          }
+        }
+      }
+      #expect(first == "downloading")
+      #expect(stages.contains("download") && stages.contains("build"))
+      #expect(last == "ready")
+      #expect(served == registry.sha256)
+      #expect(registry.fetches == 1)
+      _ = log
+    }
+  }
+
+  @Test("A download only a comma asked for is built only while it still asks: a build unloads the engine")
+  func notBuiltForAnAbsentComma() async throws {
+    try await withController { controller, registry, log in
+      let request = try Request(sha256: registry.sha256, nbytes: registry.size, frameSkip: 4, fetch: true)
+      #expect(controller.server.host.request(request, session: nil)["state"] as? String == "downloading")
+      _ = try await log.wait { if case .download(let d) = $0 { d.state == "done" } else { false } }
+      try await Task.sleep(for: .milliseconds(300))
+      #expect(controller.server.host.snapshot().state == .none)
+      // its next request builds it from the file
+      let again = try Request(sha256: registry.sha256, nbytes: registry.size, frameSkip: 4, fetch: true)
+      _ = controller.server.host.request(again, session: nil)
+      _ = try await log.wait { if case .engine(let e) = $0 { e.state == .ready && e.sha256 == registry.sha256 } else { false } }
+      #expect(registry.fetches == 1)
+    }
+  }
+
+  @Test("A comma that did not ask for the download hears need_upload, as it always did")
+  func noFetchUnasked() async throws {
+    try await withController { controller, registry, _ in
+      let request = try Request(sha256: registry.sha256, nbytes: registry.size, frameSkip: 4)
+      #expect(controller.server.host.request(request, session: nil)["state"] as? String == "need_upload")
+      #expect(registry.fetches == 0)
+    }
+  }
+
+  @Test("A download with no internet ends in need_upload, and the hello says not to count on one for a while")
+  func offline() async throws {
+    try await withController { controller, registry, log in
+      registry.failing = RegistryError(.network, "no route to host")
+      let request = try Request(sha256: registry.sha256, nbytes: registry.size, frameSkip: 4, fetch: true)
+      #expect(controller.server.host.request(request, session: nil)["state"] as? String == "downloading")
+      _ = try await log.wait { if case .download(let d) = $0 { d.state == "failed" } else { false } }
+      #expect(controller.server.host.status(registry.sha256)["state"] as? String == "need_upload")
+      #expect(!controller.canFetch)
+      // the comma uploads it or fetches it itself; asking again starts nothing
+      #expect(controller.server.host.request(request, session: nil)["state"] as? String == "need_upload")
+      #expect(registry.fetches == 1)
+    }
+  }
+
+  /// A blocking client's exchange, on a thread of its own rather than one
+  /// the server's downloads need.
+  func offThePool<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+      Thread { continuation.resume(with: Result { try body() }) }.start()
     }
   }
 }

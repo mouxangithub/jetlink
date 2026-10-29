@@ -699,7 +699,9 @@ public enum ControlCommand: Sendable, Equatable {
   case download(ref: String?, sha256: String?)
   case cancelDownload(sha256: String)
   case importModel(path: String)
-  case prepare(sha256: String, frameSkip: Int)
+  /// Use this model here: a pick the comma takes at its next hello. `ref`
+  /// is the catalog row chosen, for a model two rows share.
+  case prepare(sha256: String, frameSkip: Int, ref: String? = nil)
   case unload
   case forget(sha256: String, artifacts: Bool, model: Bool)
   case inventory
@@ -741,7 +743,9 @@ public enum ControlCommand: Sendable, Equatable {
     case "download": self = .download(ref: object["ref"] as? String, sha256: object["sha256"] as? String)
     case "cancel_download": self = .cancelDownload(sha256: try text("sha256"))
     case "import": self = .importModel(path: try text("path"))
-    case "prepare": self = .prepare(sha256: try text("sha256"), frameSkip: number("frame_skip")?.intValue ?? Pinned.defaultFrameSkip)
+    case "prepare":
+      self = .prepare(
+        sha256: try text("sha256"), frameSkip: number("frame_skip")?.intValue ?? Pinned.defaultFrameSkip, ref: object["ref"] as? String)
     case "unload": self = .unload
     case "forget": self = .forget(sha256: try text("sha256"), artifacts: flag("artifacts", true), model: flag("model", false))
     case "inventory": self = .inventory

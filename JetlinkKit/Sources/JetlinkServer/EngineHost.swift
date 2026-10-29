@@ -37,14 +37,37 @@ struct Request: Equatable {
   let sha256: String
   let nbytes: Int64
   let frameSkip: Int
+  /// The comma has not got the model either: this server may download it
+  /// (`ModelFetching`) rather than answer need_upload.
+  let fetch: Bool
+  /// The catalog ref the comma knows the model by, when it knows one.
+  let ref: String?
 
-  init(sha256: String, nbytes: Int64, frameSkip: Int) throws {
+  init(sha256: String, nbytes: Int64, frameSkip: Int, fetch: Bool = false, ref: String? = nil) throws {
     guard CacheLayout.isSHA256(sha256) else { throw HostError.invalid("model identity must be a lowercase SHA-256 digest") }
     guard nbytes >= 0, frameSkip > 0 else { throw HostError.invalid("invalid model size or frame skip") }
     self.sha256 = sha256
     self.nbytes = nbytes
     self.frameSkip = frameSkip
+    // an LFS object is an oid and a size: without the size there is nothing to ask for
+    self.fetch = fetch && nbytes > 0
+    self.ref = ref.flatMap { CacheLayout.isRef($0) ? $0 : nil }
   }
+}
+
+/// What downloads a model the comma asked for and neither end has: the
+/// control layer, which owns the downloads. Without one the server answers
+/// need_upload, as it always did, and the comma downloads the model itself.
+protocol ModelFetching: AnyObject, Sendable {
+  /// Download what `request` names, then prepare it if the comma still wants
+  /// it; `downloading` says whether that is under way.
+  func fetch(_ request: Request)
+  /// Bytes so far and the total of a download a comma waits on.
+  func downloading(_ sha256: String) -> (bytes: Int64, total: Int64)?
+  /// Could this server download a model now, as far as it can tell: the
+  /// hello's `fetches`, which a comma parked without this server goes by to
+  /// decide whether to fetch a new pick itself.
+  var canFetch: Bool { get }
 }
 
 package enum HostError: Error, CustomStringConvertible {
@@ -108,11 +131,17 @@ public final class EngineHost: @unchecked Sendable {
   let hooks: ServerHooks
   /// `hooks.telemetry`, sampled off the frame path.
   let telemetry: TelemetrySampler
+  /// The model picked last, here or on the comma.
+  public let picks: PickStore
+  /// Downloads a model the comma lacks too; set once, by the control layer,
+  /// before the server starts.
+  weak var fetcher: (any ModelFetching)?
 
   public init(cache: ServerCache, hooks: ServerHooks = ServerHooks()) {
     self.cache = cache
     self.hooks = hooks
     telemetry = TelemetrySampler(source: hooks.telemetry)
+    picks = PickStore(layout: cache.layout)
   }
 
   deinit {
@@ -204,6 +233,9 @@ public final class EngineHost: @unchecked Sendable {
       // would read need_upload as an engine that is gone.
       return ["state": "building", "sha256": sha256, "chunk": chunk, "detail": "engine cached, not loaded yet"]
     }
+    if let (bytes, total) = fetcher?.downloading(sha256) {
+      return ["state": "downloading", "sha256": sha256, "chunk": chunk, "detail": EngineHost.downloading(bytes, total)]
+    }
     return ["state": "need_upload", "sha256": sha256, "chunk": chunk, "detail": "have \(modelBytes(sha256)) of the model"]
   }
 
@@ -228,28 +260,54 @@ public final class EngineHost: @unchecked Sendable {
       lock.unlock()
       return ready
     }
-    if let job, job.state == .building {
-      let status = statusLocked(request.sha256, frameSkip: request.frameSkip)
-      lock.unlock()
-      return status
-    }
+    let busy = job?.state == .building
     lock.unlock()
     let entry = cache.entry(request)
     let modelPath = cache.modelPath(request)
-    let spec = specOnDisk(entry, modelPath: modelPath, request: request)
-    if entry.exists, let spec {
+    let haveModel = modelComplete(modelPath, nbytes: request.nbytes)
+    let spec = busy ? nil : specOnDisk(entry, modelPath: modelPath, request: request)
+    if !busy, entry.exists, let spec {
       start(Job(sha256: request.sha256, loadOnly: true), request: request, entry: entry, modelPath: modelPath, spec: spec)
-    } else if modelComplete(modelPath, nbytes: request.nbytes) {
+    } else if !busy, haveModel {
       start(Job(sha256: request.sha256, loadOnly: false), request: request, entry: entry, modelPath: modelPath, spec: spec)
     } else {
       lock.lock()
       if let job, job.sha256 == request.sha256, job.state == .failed {
-        // Whatever failed has left the disk; what the client needs now is need_upload.
+        // Whatever failed has left the disk; what the client needs now is
+        // need_upload, or the download it asked for.
         self.job = nil
       }
       lock.unlock()
+      if request.fetch, !entry.exists, !haveModel {
+        // Neither end has it. A download needs no GPU, so it does not wait
+        // for a build to end; the controller prepares it when it lands
+        fetcher?.fetch(request)
+      }
     }
     return status(request.sha256, frameSkip: request.frameSkip)
+  }
+
+  /// A download a comma waited on has ended without the model. A session
+  /// still waiting for it hears need_upload now, and uploads the model or
+  /// fetches it itself, rather than wait out its build timeout.
+  func fetchEnded(_ sha256: String) {
+    waiting(for: sha256)?.engineUpdate()
+  }
+
+  /// A download's progress, to the session waiting on that model only.
+  func fetchProgress(_ sha256: String, _ frac: Double, bytes: Int64, total: Int64) {
+    waiting(for: sha256)?.progress("download", frac, EngineHost.downloading(bytes, total))
+  }
+
+  private func waiting(for sha256: String) -> Session? {
+    lock.lock()
+    let session = self.session
+    lock.unlock()
+    return session?.request?.sha256 == sha256 ? session : nil
+  }
+
+  static func downloading(_ bytes: Int64, _ total: Int64) -> String {
+    "downloading \(bytes >> 20) of \(total >> 20) MB"
   }
 
   private func readyStatus(_ loaded: Loaded) -> [String: Any] {

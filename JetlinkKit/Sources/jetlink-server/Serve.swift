@@ -94,7 +94,7 @@
       hooks.fatal = exitOnFatal
 
       let server: Server
-      let controller: ServerController?
+      let controller: ServerController
       do {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         server = try Server(
@@ -102,8 +102,9 @@
             host: host, port: port, cacheRoot: root, preload: !noPreload, dial: dial.flatMap { DialTarget($0) }, listen: listen || !usb, usb: usb),
           backend: backend, gadget: gadget, hooks: hooks)
         // Made before the server starts, so it hears the first link event:
-        // a comma on the bus at boot connects at once.
-        controller = statusPort > 0 ? ServerController(server: server, registry: Registry(layout: server.cache.layout)) : nil
+        // a comma on the bus at boot connects at once. With the page off too:
+        // it downloads a model the comma asks for and has not got either.
+        controller = ServerController(server: server, registry: Registry(layout: server.cache.layout))
         log.info("backend \(backend.name) \(backend.runtimeVersion) on \(backend.deviceTag()), cache \(root.path)")
         try server.start()
         // The installer waits for this line. It is said whatever the comma is
@@ -118,7 +119,7 @@
       #if os(Linux)
         hardware = PageHardware(cache: root, gpu: telemetry)
       #endif
-      let page = controller.flatMap { startPage($0, hardware: hardware, log: log) }
+      let page = statusPort > 0 ? startPage(controller, hardware: hardware, log: log) : nil
       stopOnSignals { signal in
         log.info("stopping on \(signal)")
         // The comma's server, its engine and gadget first, so a frame in
@@ -130,6 +131,8 @@
           page.stop()
           log.info("stopped the web page")
         }
+        // held to the end: the host keeps its fetcher weakly
+        withExtendedLifetime(controller) {}
       }
     }
 

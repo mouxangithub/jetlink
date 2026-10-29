@@ -178,8 +178,7 @@ final class Session: @unchecked Sendable {
     }
     if type == .helloReq {
       // A hello means "a new client process", answered whatever the seq says.
-      greet(message)
-      try onHello(message)
+      try onHello(message, client: greet(message))
       return
     }
     // Seqs never repeat on a connection, so anything at or below the last one
@@ -231,7 +230,8 @@ final class Session: @unchecked Sendable {
     return true
   }
 
-  private func greet(_ message: Message) {
+  /// Starts the session over for the hello's client, which it returns.
+  private func greet(_ message: Message) -> [String: Any]? {
     let hello = Session.helloClient(message)
     if adopt(hello: hello), announced {
       onLink?(linkEvent, false)
@@ -254,9 +254,10 @@ final class Session: @unchecked Sendable {
     host.lastSeenAt = ProcessInfo.processInfo.systemUptime
     host.lock.unlock()
     log.info("hello from \(self.who) (seq \(message.seq))")
+    return hello
   }
 
-  private func onHello(_ message: Message) throws {
+  private func onHello(_ message: Message, client hello: [String: Any]?) throws {
     let (sha, skip) = wanted()
     var response: [String: Any] = [
       "protocol": Int(Wire.version),
@@ -268,6 +269,12 @@ final class Session: @unchecked Sendable {
       // 0 unless the host really suspends: the comma then holds the gadget
       // for the whole park instead of letting go for a box that never sleeps.
       "sleep_after": host.hooks.sleepAfter,
+      // The newer of this server's pick and the comma's; a comma whose own
+      // pick is older takes this one (PickStore).
+      "pick": PickStore.wire(host.picks.meet(hello?["pick"] as? [String: Any])),
+      // Whether a model neither end has is downloaded here when the comma asks:
+      // a comma parked without this server fetches a new pick itself only if not.
+      "fetches": host.fetcher?.canFetch ?? false,
     ]
     for (key, value) in host.backend.describe() {
       response[key] = value
@@ -303,7 +310,7 @@ final class Session: @unchecked Sendable {
       return
     }
     let skip = (d["frame_skip"] as? NSNumber)?.intValue ?? ModelConstants.defaultFrameSkip
-    let request = try Request(sha256: sha, nbytes: nbytes, frameSkip: skip)
+    let request = try Request(sha256: sha, nbytes: nbytes, frameSkip: skip, fetch: (d["fetch"] as? Bool) ?? false, ref: d["ref"] as? String)
     self.request = request
     try sendJSON(.engineResp, seq: message.seq, host.request(request, session: self))
   }

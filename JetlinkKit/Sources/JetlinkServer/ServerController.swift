@@ -12,7 +12,11 @@ public protocol ModelRegistry: Sendable {
   /// The LFS pointer behind a catalog ref: the model's sha256 and size.
   func resolvePointer(ref: String) async throws -> (sha256: String, size: Int64)
   func ref(for sha256: String) -> String?
-  func fetch(_ refOrSHA256: String, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws -> URL
+  /// The catalog's name and ref for a model, as far as it knows them.
+  func name(for sha256: String) -> (name: String?, ref: String?)
+  /// The model behind an LFS pointer: one a catalog ref resolved to, or one
+  /// the comma named, which needs no catalog.
+  func fetch(sha256: String, size: Int64, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws -> URL
   /// Copies a model in and returns its sha256.
   func importModelFile(at url: URL, name: String?, progress: @escaping @Sendable (Double) -> Void) async throws -> String
   func inventory(artifactTag: String?, artifactSuffix: String, loaded: String?) -> InventoryEvent
@@ -45,6 +49,9 @@ public final class ServerController: @unchecked Sendable {
   private var inventoryPayload: InventoryEvent?
   private var inventoryAt: TimeInterval = 0
   private var benchmark: BenchmarkRun?
+  /// When a download last failed for want of the internet: `canFetch` says no
+  /// for a while after, so a parked comma fetches a new pick itself.
+  private var offlineAt: TimeInterval?
   private let observersLock = NSLock()
   private var observers: [(id: Int, listener: @Sendable (ControlEvent) -> Void)] = []
   private var nextObserver = 0
@@ -63,10 +70,15 @@ public final class ServerController: @unchecked Sendable {
     var rate = 0.0
     var rateBytes: Int64 = 0
     var rateAt: TimeInterval = 0
-    /// A `prepare` that found no model file: the frame_skip to prepare with
-    /// once the download lands, and whether the comma was connected when asked.
+    /// The frame_skip to prepare with once the download lands: asked for by
+    /// a `prepare` that found no model file, or by a comma (`forComma`).
     var prepare: Int?
-    var prepareOverComma = false
+    /// A `prepare` here asked for it, and whether a comma was connected then;
+    /// nil when only a comma did.
+    var askedHere: Bool?
+    /// A comma asked for it and has not got it either (`ModelFetching`): it
+    /// waits on this download, and hears how it ends.
+    var forComma = false
 
     init(sha256: String, ref: String?, total: Int64) {
       self.sha256 = sha256
@@ -80,6 +92,7 @@ public final class ServerController: @unchecked Sendable {
     self.server = server
     self.registry = registry
     server.host.subscribe { [weak self] event in self?.onHost(event) }
+    server.host.fetcher = self
   }
 
   /// Every event published from the first time this is read, for one
@@ -272,8 +285,8 @@ public final class ServerController: @unchecked Sendable {
       }
       Task { await self.runImport(url) }
       return ["queued": .bool(true)]
-    case .prepare(let sha256, let frameSkip):
-      return try await prepare(sha256, frameSkip: frameSkip)
+    case .prepare(let sha256, let frameSkip, let ref):
+      return try await prepare(sha256, frameSkip: frameSkip, ref: ref)
     case .unload:
       server.host.unload()
       return [:]
@@ -380,6 +393,12 @@ public final class ServerController: @unchecked Sendable {
     return ["sha256": .string(pointer.sha256)]
   }
 
+  /// Hold `lock`. `download`, set to prepare with `frameSkip` once it lands.
+  private func preparing(_ download: Download, frameSkip: Int) -> Download {
+    download.prepare = frameSkip
+    return download
+  }
+
   /// Hold `lock`, and check `active` first.
   private func enqueue(_ download: Download) -> Download {
     active[download.sha256] = download
@@ -415,7 +434,7 @@ public final class ServerController: @unchecked Sendable {
     downloadEvent(state, "started")
     do {
       _ = try await registry.fetch(
-        state.ref ?? state.sha256,
+        sha256: state.sha256, size: state.total,
         progress: { [weak self] frac in self?.downloadProgress(state, frac) },
         shouldStop: { state.cancel })
     } catch {
@@ -424,13 +443,20 @@ public final class ServerController: @unchecked Sendable {
       } else {
         log.warning("downloading \(state.sha256.prefix(16)) failed: \(String(describing: error))")
         downloadEvent(state, "failed", detail: "\(type(of: error)): \(error)")
+        if let error = error as? RegistryError, [.network, .notFound].contains(error.kind) {
+          lock.withLock { offlineAt = ProcessInfo.processInfo.systemUptime }
+        }
       }
       forgetDownload(state)
+      // after the forget: the comma's next look at the model finds no download
+      server.host.fetchEnded(state.sha256)
       return
     }
+    lock.withLock { offlineAt = nil }
     if state.cancel {
       downloadEvent(state, "cancelled")
       forgetDownload(state)
+      server.host.fetchEnded(state.sha256)
       return
     }
     downloadEvent(state, "done", frac: 1)
@@ -443,12 +469,22 @@ public final class ServerController: @unchecked Sendable {
 
   /// The second half of a `prepare` that had to download first. A comma that
   /// connected during the download and is driving on another model keeps it.
+  /// One only a comma asked for is built only while the comma still asks for
+  /// it: a build unloads the engine, and between two sessions of a drive the
+  /// engine loaded is the one driving. Its next request builds it.
   private func prepareDownloaded(_ state: Download) {
-    guard let frameSkip = state.prepare else { return }
+    let (frameSkip, askedHere) = lock.withLock { (state.prepare, state.askedHere) }
+    guard let frameSkip else { return }
     server.host.lock.lock()
     let wanted = server.host.session?.request?.sha256
     server.host.lock.unlock()
-    if currentLink.state == .connected, let wanted, wanted != state.sha256, !state.prepareOverComma {
+    let skip: Bool
+    if let overComma = askedHere {
+      skip = currentLink.state == .connected && wanted != nil && wanted != state.sha256 && !overComma
+    } else {
+      skip = wanted != state.sha256
+    }
+    if skip {
       log.info("downloaded \(state.sha256.prefix(16)); not preparing it over the model the comma is using")
       return
     }
@@ -487,8 +523,12 @@ public final class ServerController: @unchecked Sendable {
       sha256: state.sha256, ref: state.ref, state: kind, frac: pythonRound(state.frac, 4),
       bytes: done, total: state.total, rateBps: pythonRound(state.rate, 1), detail: detail, source: nil)
     state.last = event
+    let forComma = state.forComma
     lock.unlock()
     publish(.download(event))
+    if forComma && (kind == "started" || kind == "progress") {
+      server.host.fetchProgress(state.sha256, state.frac, bytes: done, total: state.total)
+    }
   }
 
   private func forgetDownload(_ state: Download) {
@@ -546,31 +586,42 @@ public final class ServerController: @unchecked Sendable {
 
   // MARK: prepare, forget
 
-  private func prepare(_ sha256: String, frameSkip: Int) async throws -> [String: JSONValue] {
+  /// Use this model: a pick made here, which the comma takes at its next
+  /// hello unless it has picked another since (PickStore). `ref` is the
+  /// catalog row the user chose, for a model two rows share.
+  private func prepare(_ sha256: String, frameSkip: Int, ref: String? = nil) async throws -> [String: JSONValue] {
     guard CacheLayout.isSHA256(sha256) else { throw ControlError.refused("sha256 must be a lowercase SHA-256 digest") }
     let entry = try server.cache.entry(sha256)
     let modelPath = try server.cache.modelPath(sha256)
     if !entry.exists && !FileManager.default.fileExists(atPath: modelPath.path) {
-      return try await downloadThenPrepare(sha256, frameSkip: frameSkip)
+      let (reply, size) = try await downloadThenPrepare(sha256, frameSkip: frameSkip)
+      pickHere(sha256, ref: ref, nbytes: size)
+      return reply
     }
     // The comma's own path, with no comma: one piece of code loads an engine.
     let request = try Request(sha256: sha256, nbytes: nbytes(sha256), frameSkip: frameSkip)
+    pickHere(sha256, ref: ref, nbytes: request.nbytes)
     _ = server.host.request(request, session: nil)
     return ["state": .string(server.host.snapshot().state.rawValue)]
   }
 
+  private func pickHere(_ sha256: String, ref: String?, nbytes: Int64) {
+    let known = registry.name(for: sha256)
+    server.host.picks.pickHere(sha256: sha256, ref: ref ?? known.ref, nbytes: nbytes, name: known.name)
+  }
+
   /// `prepare` for a model with nothing on disk: download it, prepare it after.
-  /// A download already running for it is joined rather than refused.
-  private func downloadThenPrepare(_ sha256: String, frameSkip: Int) async throws -> [String: JSONValue] {
+  /// A download already running for it is joined rather than refused. The
+  /// reply, and the model's size.
+  private func downloadThenPrepare(_ sha256: String, frameSkip: Int) async throws -> ([String: JSONValue], Int64) {
     let overComma = currentLink.state == .connected
-    let joined = lock.withLock {
-      guard let state = active[sha256] else { return false }
-      state.prepare = frameSkip
-      state.prepareOverComma = overComma
-      return true
+    let joined: Int64? = lock.withLock {
+      guard let state = active[sha256] else { return nil }
+      preparing(state, frameSkip: frameSkip).askedHere = overComma
+      return state.total
     }
-    if joined {
-      return ["state": .string("downloading"), "sha256": .string(sha256)]
+    if let joined {
+      return (["state": .string("downloading"), "sha256": .string(sha256)], joined)
     }
     guard let ref = registry.ref(for: sha256) else {
       throw ControlError.refused("model \(sha256.prefix(16)) is not downloaded, and is not in the catalog")
@@ -587,11 +638,10 @@ public final class ServerController: @unchecked Sendable {
     lock.withLock {
       // Joined by the lock with forgetDownload, so a download still listed
       // here is one that will read `prepare` when it finishes.
-      let state = active[sha256] ?? enqueue(Download(sha256: sha256, ref: ref, total: pointer.size))
-      state.prepare = frameSkip
-      state.prepareOverComma = overComma
+      preparing(active[sha256] ?? enqueue(Download(sha256: sha256, ref: ref, total: pointer.size)), frameSkip: frameSkip)
+        .askedHere = overComma
     }
-    return ["state": .string("downloading"), "sha256": .string(sha256)]
+    return (["state": .string("downloading"), "sha256": .string(sha256)], pointer.size)
   }
 
   /// What the model weighs, for a request that has no client behind it.
@@ -623,5 +673,40 @@ public final class ServerController: @unchecked Sendable {
       server.cache.forgetLastLoaded()
     }
     publishInventory()
+  }
+}
+
+// MARK: downloads for the comma
+
+extension ServerController: ModelFetching {
+  /// How long a download that could not reach the internet keeps `canFetch` no.
+  static let offlineFor: TimeInterval = 600
+
+  /// A model the comma asked for that neither end has: downloaded here by the
+  /// oid and size the comma named, then prepared for it (prepareDownloaded),
+  /// joining a download already running for it. Nothing when this server
+  /// cannot reach the internet: the comma hears need_upload and fetches the
+  /// model itself at once.
+  func fetch(_ request: Request) {
+    guard canFetch else { return }
+    let joined = lock.withLock {
+      let running = active[request.sha256]
+      preparing(running ?? enqueue(Download(sha256: request.sha256, ref: request.ref, total: request.nbytes)), frameSkip: request.frameSkip)
+        .forComma = true
+      return running != nil
+    }
+    log.info("\(joined ? "the comma waits on the download of" : "downloading") \(request.sha256.prefix(16)) (\(request.nbytes >> 20) MB) for the comma")
+  }
+
+  func downloading(_ sha256: String) -> (bytes: Int64, total: Int64)? {
+    lock.withLock {
+      guard let state = active[sha256], state.forComma else { return nil }
+      return (state.last?.bytes ?? 0, state.total)
+    }
+  }
+
+  var canFetch: Bool {
+    let offline = lock.withLock { offlineAt.map { ProcessInfo.processInfo.systemUptime - $0 < Self.offlineFor } ?? false }
+    return !offline && Reachability.hasDefaultRoute()
   }
 }

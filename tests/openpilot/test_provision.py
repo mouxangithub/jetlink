@@ -153,6 +153,42 @@ class TestProvisionCost(OpenpilotTest):
     assert [c.args[4] for c in ensure.call_args_list] == [None, self.model]
     assert d.client.hello.call_count == 2, "a new session after the download"
 
+  def test_the_server_is_asked_to_download_what_neither_end_has(self):
+    # only the Jetson needs the model: it fetches it itself, and the comma
+    # fetches it only once the server has said it cannot
+    d = self.run_with()
+    d.client.ensure_engine.side_effect = [EngineMissing('no internet'), EngineMissing('need upload'), FakeSpec()]
+    with mock.patch.object(self.parts.models, 'shipped_model_path', return_value=None), \
+         mock.patch.object(d, 'fetch_model', return_value=self.model) as fetch:
+      assert d.provision() is True
+    asked, again, uploaded = d.client.ensure_engine.call_args_list
+    assert asked.kwargs['fetch'] is True and asked.kwargs['onnx_path'] is None
+    assert asked.kwargs['ref'] == self.ENTRY['ref']
+    # with the file here, the server is not asked to download it again
+    assert again.kwargs['fetch'] is False and again.kwargs['onnx_path'] is None
+    assert uploaded.kwargs['onnx_path'] == self.model
+    fetch.assert_called_once()
+
+  def test_a_server_that_downloads_it_needs_nothing_from_the_comma(self):
+    d = self.run_with()
+    with mock.patch.object(self.parts.models, 'shipped_model_path', return_value=None), \
+         mock.patch.object(d, 'fetch_model') as fetch:
+      assert d.provision() is True
+    fetch.assert_not_called()
+    assert d.client.ensure_engine.call_args.kwargs['fetch'] is True
+
+  def test_the_hello_carries_our_pick_and_a_newer_one_on_the_server_is_provisioned(self):
+    d = self.run_with()
+    theirs = {**self.ENTRY, 'name': 'Picked on the Jetson', 'ref': 'e' * 40, 'oid': 'e' * 64}
+    with mock.patch.object(self.parts.models, 'hello_pick', return_value={'ref': 'f' * 40, 'age_s': 9.0}), \
+         mock.patch.object(self.parts.models, 'adopt') as adopt, \
+         mock.patch.object(self.parts.models, 'selected_model', return_value=theirs):
+      assert d.provision() is True
+    d.client.hello.assert_called_once_with(timeout=10.0, pick={'ref': 'f' * 40, 'age_s': 9.0})
+    adopt.assert_called_once_with()
+    assert d.client.ensure_engine.call_args.args[0] == 'e' * 64
+    assert self.op.log.has('provisioning Picked on the Jetson')
+
   def test_a_download_that_fails_leaves_the_engine_missing(self):
     d = self.run_with()
     d.client.ensure_engine.side_effect = EngineMissing('no engine')
@@ -256,7 +292,9 @@ class TestProvisionCost(OpenpilotTest):
       assert d.provision() is False
     assert self.cache.ready is False
     self.progress.clear.assert_called_once_with()
-    d.client.hello.assert_not_called()
+    # the hello came first, in case the server had a model picked on it
+    d.client.hello.assert_called_once()
+    d.client.ensure_engine.assert_not_called()
 
 
 class TestFetching(OpenpilotTest):
@@ -376,44 +414,79 @@ class TestTheRun(OpenpilotTest):
     assert d.run() is False
     d.provision.assert_not_called()
 
-  def test_the_bytes_come_first_and_need_no_jetson(self):
-    # a car whose Jetson is switched with the ignition has none while parked,
-    # which is when there is time to download
+  def test_the_jetson_is_asked_before_any_download(self):
+    # only the Jetson needs the model, and one that has it, or can download
+    # it, needs nothing from the comma: a sleeping one wakes to the bind
     d = self.worker()
     order = []
     self.patch(d, 'needs_download', mock.Mock(return_value=True))
     self.patch(d, 'fetch_model', mock.Mock(side_effect=lambda: order.append('fetch') or Path('/m.onnx')))
     d.open_link.side_effect = lambda: order.append('borrow') or True
+    d.provision.side_effect = lambda: order.append('provision') or True
     assert d.run() is True
-    self.assertEqual(order, ['fetch', 'borrow'])
+    self.assertEqual(order, ['borrow', 'provision'])
 
-  def test_a_host_on_the_cable_is_asked_before_any_download(self):
-    # a Mac or a Jetson that has the model built needs nothing from the comma;
-    # provision() fetches it only if the host has not got it
-    d = self.worker()
-    self.patch(d, 'needs_download', mock.Mock(return_value=True))
-    self.patch(d, 'fetch_model', mock.Mock(return_value=Path('/m.onnx')))
-    gadget.host_attached.return_value = True
-    assert d.run() is True
-    d.fetch_model.assert_not_called()
-    d.provision.assert_called_once_with()
+  def test_with_no_jetson_the_comma_downloads_only_for_one_that_cannot(self):
+    # a car whose Jetson is switched with the ignition has none while parked:
+    # one that downloads for itself gets the model when it is on, and one
+    # with no internet (or too old to say) gets it from the comma, fetched now
+    for heard, fetched in (({'fetches': True}, False), ({'fetches': False}, True), ({}, True), (None, True)):
+      with self.subTest(heard=heard):
+        d = self.worker()
+        self.patch(d, 'needs_download', mock.Mock(return_value=True))
+        self.patch(d, 'fetch_model', mock.Mock(return_value=Path('/m.onnx')))
+        gadget.wait_for_host.return_value = False
+        if heard is None:
+          gadget.SERVER.unlink(missing_ok=True)
+        else:
+          gadget.write_record(gadget.SERVER, heard)
+        assert d.run() is False
+        self.assertIs(d.fetch_model.called, fetched)
+        d.provision.assert_not_called()
+        if fetched:
+          self.parts.progress.report.assert_called_with('waiting', 0.0, 'downloaded, builds when the jetson is on',
+                                                        code='downloaded_waiting_host')
+        else:
+          self.parts.progress.report.assert_called_with('waiting', 0.0, 'the jetson downloads it when it is on',
+                                                        code='waiting_for_host')
 
-  def test_a_download_that_fails_ends_the_round_before_the_link(self):
+  def test_the_download_waits_until_the_link_is_let_go(self):
+    # minutes on LTE: the loan goes back to the owner first
     d = self.worker()
+    order = []
     self.patch(d, 'needs_download', mock.Mock(return_value=True))
-    self.patch(d, 'fetch_model', mock.Mock(return_value=None))
+    self.patch(d, 'fetch_model', mock.Mock(side_effect=lambda: order.append('fetch') or None))
+    self.patch(d, 'close_link', mock.Mock(side_effect=lambda: order.append('close')))
+    gadget.wait_for_host.return_value = False
     assert d.run() is False
-    d.open_link.assert_not_called()
+    self.assertEqual(order[:2], ['close', 'fetch'])
+    self.parts.progress.report.assert_not_called()
 
   def test_downloaded_with_no_jetson_says_it_builds_when_one_is_on(self):
     d = self.worker()
-    self.patch(d, 'needs_download', mock.Mock(return_value=True))
+    self.patch(d, 'needs_download', mock.Mock(return_value=False))
     self.patch(d, 'fetch_model', mock.Mock(return_value=Path('/m.onnx')))
-    self.patch(self.parts.models, 'shipped_model_path', return_value=Path('/m.onnx'))
     gadget.wait_for_host.return_value = False
     assert d.run() is False
+    d.fetch_model.assert_not_called()
     self.parts.progress.report.assert_called_with('waiting', 0.0, 'downloaded, builds when the jetson is on',
                                                   code='downloaded_waiting_host')
+
+  def test_a_jetson_awake_on_the_bus_is_asked_for_its_pick(self):
+    # nothing to build here, but a model picked on the server since is the
+    # comma's now: a hello says, and needs no wake
+    d = self.worker(work=False)
+    gadget.host_attached.return_value = True
+    assert d.run() is True
+    d.provision.assert_called_once_with()
+
+  def test_a_phone_on_the_cable_is_not_waited_for_with_nothing_to_do(self):
+    # the cable is there only once the app dials in
+    self.op.set_mode('ios')
+    d = self.worker(work=False)
+    gadget.host_attached.return_value = True
+    assert d.run() is True
+    d.open_link.assert_not_called()
 
   def test_only_a_pick_neither_built_nor_here_is_downloaded(self):
     d = provision.ProvisioningRun(self.parts)

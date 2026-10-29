@@ -2,13 +2,21 @@
 
 # Choose and prepare models
 
-While offroad and online, open **Settings > Models > Big Model** on the comma.
-Start with the default. The comma downloads it on any connection, and picks
-up where it left off if the download is interrupted. The Jetson then prepares
-it, about 3 minutes, the next time it is on while the car is parked. Until a
-newly picked model is ready, the model the device already has loaded drives
-(on a phone or Mac, the one picked in the app), else the last one it prepared;
-with none, the small model does. See [when it switches](using-jetlink.md#what-to-expect-when-driving).
+Pick a model on either end: **Settings > Models > Big Model** on the comma,
+or **Models** on the Jetson's web page, the Mac app or the phone apps. The
+newest pick wins on both. A model picked on the Jetson drives without being
+picked on the comma too, and the comma's list shows it after the next
+connection. Start with the default.
+
+Only the Jetson needs the model. It downloads the model itself and prepares
+it, about 3 minutes, the next time it is on while the car is parked. The
+comma downloads the model only when the Jetson cannot reach the internet, then
+hands it over. A comma whose Jetson is off while parked downloads it ahead
+only if that Jetson had no internet the last time they spoke. Interrupted
+downloads pick up where they left off. Until a newly picked model is ready,
+the model the device already has loaded drives (on a phone or Mac, the one
+picked in the app), else the last one it prepared; with none, the small model
+does. See [when it switches](using-jetlink.md#what-to-expect-when-driving).
 
 If the Jetson only has power while the car is on, prepare a new model by
 starting the car, forcing offroad, and waiting for the Big Model panel to say
@@ -21,14 +29,16 @@ leave more time in the 50 ms frame budget than the 1.7 GB Lebowski.
 comma may still change or withdraw one. When a preview leaves the list, a comma
 that had picked it goes back to the default.
 
-## Prepare ahead of time (optional)
+## Pick on the Jetson or in the app
 
-Download on the server's internet connection before connecting the comma. This
-saves time when the comma is on LTE.
+Picking here downloads on the server's own connection and prepares the model
+before the comma connects. The comma takes the pick at its next connection.
 
+On a Jetson, open the web page's **Models**, choose a model and **Download and
+prepare** (or **Prepare it** for one already downloaded).
 On Mac, open **Models**, click **Use Model**, and wait for **In Use**.
 On iPhone, iPad, or Android, open **Models** and tap **Get**. Keep the iPhone
-app open until it finishes. Pick the same model on the comma.
+app open until it finishes.
 
 ### On a Jetson or an installed PC
 

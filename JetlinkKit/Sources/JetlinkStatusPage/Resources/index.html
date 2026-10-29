@@ -864,7 +864,7 @@ function drawModels() {
   }
   const shas = [...new Set([...inv.models.map(m => m.sha256), ...inv.artifacts.map(a => a.sha256)])];
   if (!shas.length) {
-    list.innerHTML = '<div class="empty">No models yet. The comma sends its model when it connects, or get one from the library.</div>';
+    list.innerHTML = '<div class="empty">No models yet. Pick one from the library, or the comma's pick is downloaded when it connects.</div>';
     return;
   }
   const e = S.engine || {};
@@ -958,7 +958,7 @@ function openModel(sha) {
       toast('Deleted');
     } });
   if (model) actions.push({ text: 'Delete it all', tone: 'danger', disabled: why,
-    confirm: inUse ? 'It is in use: this unloads it, and the comma sends it again next time.' : '', run: async () => {
+    confirm: inUse ? 'It is in use: this unloads it, and it is downloaded again next time.' : '', run: async () => {
       await command({ cmd: 'forget', sha256: sha, artifacts: true, model: true });
       toast('Deleted ' + label(sha));
     } });
@@ -986,7 +986,7 @@ function openLibrary(ref) {
     actions.push({ text: 'Open it', tone: 'primary', run: async () => { openModel(m.sha256); return 'keep'; } });
   } else {
     if (m.sha256) actions.push({ text: 'Download and prepare', tone: 'primary', disabled: why, run: async () => {
-      await command({ cmd: 'prepare', sha256: m.sha256 });
+      await command({ cmd: 'prepare', sha256: m.sha256, ref: m.ref });
       toast('Downloading ' + m.name);
     } });
     actions.push({ text: 'Download', tone: m.sha256 ? '' : 'primary', disabled: why, run: async () => {

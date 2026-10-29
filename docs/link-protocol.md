@@ -13,8 +13,19 @@ bench tools). There is one version: update the comma and Jetlink together.
   header with any other version is a broken stream: the server drops the
   link, a comma on another version gets no answer to its hello, and it drives
   on its small model.
-- **Session.** The comma says hello, asks for its model's engine (uploading
-  the model if the server lacks it), waits until it is ready, then sends one
+- **Picks.** The comma's hello carries its big-model pick and how long ago
+  it was made (`pick`: ref, sha256, nbytes, name, `age_s`). The server keeps
+  its own pick (Use Model, the web page's prepare) beside the cache
+  (`pick.json`), and its reply's `pick` is the newer of the two, with its
+  age; the comma then runs that one and asks its model manager for it. Each
+  end dates a pick by its own clock and only ages cross the link. The reply's
+  `fetches` says whether the server downloads a model itself when asked: a
+  default route and no download failed for want of the internet in the last
+  10 minutes.
+- **Session.** The comma says hello, asks for its model's engine (with
+  `fetch` when it has not got the model either: the server then downloads it,
+  state `downloading`, stage `download`, and builds it; a server that cannot
+  answers `need_upload` and the comma downloads and uploads it), waits until it is ready, then sends one
   INFER_REQ per camera frame, 20 a second, from then on: whether the big
   model is driving or the small one still is, so the big model's history and
   hidden state are current and warm when it takes over. The server cannot

@@ -46,7 +46,7 @@ PACKAGE = ROOT / 'JetlinkKit'
 FIXTURES = PACKAGE / 'Tests' / 'JetlinkServerTests' / 'Fixtures'
 QUEUED, STATEFUL = FIXTURES / 'tiny_queued.onnx', FIXTURES / 'tiny_stateful.onnx'
 HELLO_KEYS = {'protocol', 'backend', 'runtime_version', 'device', 'engine_state', 'loaded', 'frames_served', 'cached_models',
-              'telemetry', 'sleep_after'}
+              'telemetry', 'sleep_after', 'pick', 'fetches'}
 
 
 def _binary() -> Path | None:
@@ -441,6 +441,29 @@ def test_the_hello_carries_the_link_and_answers_with_what_the_comma_reads(server
   assert hello['backend'] == 'ort' and 'trt_version' not in hello
   # a missing sleep_after reads as 1.0 on the comma, which then lets the gadget go
   assert isinstance(hello['sleep_after'], (int, float)) and hello['sleep_after'] >= 0
+
+
+def test_the_hello_settles_whose_pick_is_newer(tmp_path):
+  # a model picked on either end drives on both: the comma's hello says what
+  # it picked and how long ago, and the answer is the newer of that and the
+  # server's, kept beside the cache
+  with running(tmp_path) as s:
+    client = s.connect()
+    try:
+      hello = client.hello(timeout=5)
+      assert hello['pick'] is None and isinstance(hello['fetches'], bool)
+      mine = {'ref': 'a' * 40, 'sha256': '1' * 64, 'nbytes': 766, 'name': 'Alpha', 'age_s': 30.0}
+      pick = client.hello(timeout=5, pick=mine)['pick']
+      assert (pick['ref'], pick['sha256'], pick['by']) == ('a' * 40, '1' * 64, 'comma') and 29 <= pick['age_s'] < 40
+      older = dict(mine, ref='b' * 40, sha256='2' * 64, age_s=600.0)
+      assert client.hello(timeout=5, pick=older)['pick']['ref'] == 'a' * 40
+      newer = dict(older, age_s=1.0)
+      assert client.hello(timeout=5, pick=newer)['pick']['ref'] == 'b' * 40
+      # one with no pick of its own takes the server's
+      assert client.hello(timeout=5, pick=dict(mine, age_s=None))['pick']['ref'] == 'b' * 40
+    finally:
+      client.close()
+  assert json.loads((s.cache / 'pick.json').read_text())['ref'] == 'b' * 40
 
 
 def test_a_hello_restarts_the_seqs_and_replays_are_dropped(server):

@@ -229,6 +229,118 @@ class TestSelectedModel(ModelsTest):
     self.assertEqual(self.models.selected_model(), {'name': 'Alpha', 'ref': REF_A, 'oid': '1' * 64, 'size': 766_000_000})
 
 
+class TestPicksOnBothEnds(ModelsTest):
+  """A model picked on the server drives without being picked here too, and
+  the newer pick wins wherever it was made: the slot's by when it was
+  written, the server's by the age its hello gave."""
+
+  SLOT = 'ModelManager_ActiveBundleChestnut'
+
+  def setUp(self):
+    super().setUp()
+    self.op.keys = dataclasses.replace(self.op.keys, select='ModelManager_DownloadRef')
+    self.catalog(bundle(REF_A, 'Alpha', 1), bundle(REF_B, 'Beta', 2))
+    self.op.store['JetlinkModelPointers'] = dict(POINTERS)
+
+  def pick_here(self, ref, name, ago):
+    """A pick in the comma's list `ago` seconds ago: the slot and its file, as the model manager writes them."""
+    import os
+    import time
+    self.op.store[self.SLOT] = {'ref': ref, 'displayName': name}
+    path = self.op.store_dir / self.SLOT
+    path.write_text('{}')
+    at = time.time() - ago
+    os.utime(path, (at, at))
+    self.models._slot_cache = None
+
+  def hear(self, ref, ago, sha256='2' * 64, nbytes=1_757_000_000, name='Beta on the server'):
+    return self.models.heard({'pick': {'ref': ref, 'sha256': sha256, 'nbytes': nbytes, 'name': name,
+                                       'age_s': ago, 'by': 'here'}})
+
+  def test_the_hello_carries_our_pick_and_its_age(self):
+    self.pick_here(REF_A, 'Alpha', ago=30)
+    pick = self.models.hello_pick()
+    self.assertEqual({k: pick[k] for k in ('ref', 'sha256', 'nbytes', 'name')},
+                     {'ref': REF_A, 'sha256': '1' * 64, 'nbytes': 766_000_000, 'name': 'Alpha'})
+    self.assertAlmostEqual(pick['age_s'], 30, delta=2)
+
+  def test_with_no_pick_of_our_own_the_hello_says_none(self):
+    self.assertIsNone(self.models.hello_pick())
+
+  def test_a_newer_pick_on_the_server_drives(self):
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.hear(REF_B, ago=60)
+    # our name for it, the server's oid and size
+    self.assertEqual(self.models.selected_model(), {'name': 'Beta', 'ref': REF_B, 'oid': '2' * 64, 'size': 1_757_000_000})
+
+  def test_an_older_pick_on_the_server_does_not(self):
+    self.pick_here(REF_A, 'Alpha', ago=60)
+    self.hear(REF_B, ago=600)
+    self.assertEqual(self.models.selected_model()['ref'], REF_A)
+
+  def test_with_no_pick_here_the_servers_drives(self):
+    self.hear(REF_B, ago=6000)
+    self.assertEqual(self.models.selected_model()['ref'], REF_B)
+
+  def test_a_server_too_old_to_say_leaves_our_pick(self):
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.models.heard({'protocol': 3})
+    self.assertEqual(self.models.selected_model()['ref'], REF_A)
+
+  def test_another_process_reads_the_owners_record(self):
+    # the UI says no hello: it goes by what the owner kept of the last one
+    import time
+    from jetlink.comma import gadget
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    gadget.write_record(gadget.SERVER, {'pick': {'ref': REF_B, 'sha256': '2' * 64, 'nbytes': 5, 'at': time.time() - 60}})
+    self.assertEqual(self.models.selected_model()['ref'], REF_B)
+
+  def test_a_model_the_server_has_and_we_do_not_list_still_drives(self):
+    # imported on a Mac, say: named and sized by the server
+    self.hear(None, ago=5, sha256='9' * 64, nbytes=42, name='My export')
+    self.assertEqual(self.models.selected_model(), {'name': 'My export', 'ref': None, 'oid': '9' * 64, 'size': 42})
+
+  def test_the_servers_pick_is_asked_for_here_too(self):
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.hear(REF_B, ago=60)
+    self.models.adopt()
+    self.assertEqual(self.op.store['ModelManager_DownloadRef'], REF_B)
+    self.assertTrue(self.op.log.has('was picked on the server'))
+
+  def test_one_we_do_not_list_is_not_asked_for(self):
+    # the model manager would hold a ref it cannot resolve and never let go
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.hear(REF_C, ago=60, sha256='3' * 64, nbytes=7)
+    self.models.adopt()
+    self.assertNotIn('ModelManager_DownloadRef', self.op.store)
+    # but its pointer is kept, so naming it again needs no network
+    self.assertEqual(self.models.pointers()[REF_C], {'oid': '3' * 64, 'size': 7})
+
+  def test_nothing_is_asked_for_when_ours_is_newer_or_the_same(self):
+    self.pick_here(REF_B, 'Beta', ago=600)
+    self.hear(REF_B, ago=60)
+    self.models.adopt()
+    self.pick_here(REF_A, 'Alpha', ago=6)
+    self.models.adopt()
+    self.assertNotIn('ModelManager_DownloadRef', self.op.store)
+
+  def test_a_download_the_user_queued_is_not_written_over(self):
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.op.store['ModelManager_DownloadRef'] = 'small-model-ref'
+    self.hear(REF_B, ago=60)
+    self.models.adopt()
+    self.assertEqual(self.op.store['ModelManager_DownloadRef'], 'small-model-ref')
+    self.assertEqual(self.models.selected_model()['ref'], REF_B)
+
+  def test_without_a_place_to_ask_it_drives_all_the_same(self):
+    self.op.keys = dataclasses.replace(self.op.keys, select=None)
+    self.pick_here(REF_A, 'Alpha', ago=600)
+    self.hear(REF_B, ago=60)
+    self.models.adopt()
+    self.assertNotIn('ModelManager_DownloadRef', self.op.store)
+    self.assertEqual(self.models.selected_model()['ref'], REF_B)
+
+
 class TestWithoutAModelManager(ModelsTest):
   """A fork without sunnypilot's model manager: no pick, no catalog. The
   large model is jetlink's default, found by its ref like any pick."""
@@ -236,6 +348,11 @@ class TestWithoutAModelManager(ModelsTest):
   def setUp(self):
     super().setUp()
     self.op.keys = dataclasses.replace(self.op.keys, catalog=None, big_model=None)
+
+  def test_a_pick_on_the_server_runs_instead(self):
+    # a fork with no picker of its own follows the server's
+    self.parts.models.heard({'pick': {'ref': REF_B, 'sha256': '2' * 64, 'nbytes': 20, 'name': 'Beta', 'age_s': 10}})
+    self.assertEqual(self.models.selected_model(), {'name': 'Beta', 'ref': REF_B, 'oid': '2' * 64, 'size': 20})
 
   def test_jetlinks_default_runs(self):
     from jetlink.registry.catalog import DEFAULT_BIG_MODEL_NAME, DEFAULT_BIG_MODEL_REF
@@ -263,7 +380,9 @@ class TestWithoutAModelManager(ModelsTest):
     fetch.assert_called_once_with(DEFAULT_BIG_MODEL_REF)
     self.assertEqual(client.ensure_engine.call_args.args[:2], ('9' * 64, 766_000_000))
     self.assertTrue(self.parts.spec.engine_ready_for('9' * 64))
-    self.assertEqual(client.ensure_engine.call_args.kwargs['build_timeout'], link.BUILD_TIMEOUT)
+    # neither end has the bytes, so the server is asked to download them, with the time that takes
+    self.assertTrue(client.ensure_engine.call_args.kwargs['fetch'])
+    self.assertEqual(client.ensure_engine.call_args.kwargs['build_timeout'], link.BUILD_TIMEOUT + link.FETCH_TIMEOUT)
 
   def test_a_fork_whose_catalog_is_not_fetched_yet_still_waits_for_it(self):
     # sunnypilot's model manager lists it shortly; its pick may not be the default

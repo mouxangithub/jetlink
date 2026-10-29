@@ -167,7 +167,7 @@ public final class ModelStore {
       picks[sha] = ref
       rebuild()
     }
-    perform("use that model") { try await $0.send(.prepare(sha256: sha, frameSkip: ModelStore.defaultFrameSkip)) }
+    perform("use that model") { try await $0.send(.prepare(sha256: sha, frameSkip: ModelStore.defaultFrameSkip, ref: row.ref)) }
   }
 
   public func unload() {

@@ -48,12 +48,17 @@ class Keys:
   pointers: str                  # JSON: catalog ref -> {oid, size}
   # sunnypilot's model manager: the big-model pick, JSON {ref, displayName},
   # and the big-model catalog, JSON {bundles}. Without one both are None, and
-  # jetlink runs its own default big model
+  # jetlink runs its own default big model, or the one picked on the server
   big_model: str | None = None
   catalog: str | None = None
   # BOOL: an iPhone on a direct cable is asked to charge from the comma
   # (comma.port). Off when unset, and without the key
   charge_phone: str | None = None
+  # STRING: where the model manager takes a pick by its ref and stores it in
+  # big_model (sunnypilot's ModelManager_DownloadRef). A newer pick made on
+  # the server is written there, so the comma's own list shows it; without
+  # the key it drives all the same
+  select: str | None = None
 
 
 @dataclass(frozen=True)

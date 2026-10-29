@@ -153,7 +153,7 @@ angle brackets.
 | `download` | `ref` or `sha256` | `sha256` | queues a download (one at a time, in order); `download` events follow |
 | `cancel_download` | `sha256` | | cancels it and removes the `.part` |
 | `import` | `path` | `queued: true` | hashes and copies the file in; `import` events, then `inventory` |
-| `prepare` | `sha256`, `frame_skip` (default 4) | `state`; `sha256` when downloading | builds if needed and loads it. With no model file or engine on disk it downloads first and replies `state: "downloading"` |
+| `prepare` | `sha256`, `frame_skip` (default 4), `ref` (the catalog row chosen, for a model two rows share) | `state`; `sha256` when downloading | builds if needed and loads it. With no model file or engine on disk it downloads first and replies `state: "downloading"`. It is a pick: the comma takes it at its next hello unless it picked another since |
 | `unload` | | | releases the loaded engine |
 | `forget` | `sha256`, `artifacts` (default true), `model` (default false) | | unloads it if loaded, deletes its engines and/or download, then `inventory` |
 | `inventory` | | | emits `inventory` |

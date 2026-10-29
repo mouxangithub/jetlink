@@ -309,6 +309,31 @@ class BuildingOnroad(OpenpilotTest):
     assert self.op.log.has('CTM v2 is not built yet, building it with the small model driving')
     assert self.op.log.has(f"orin trt 10.3, engine ready, loaded {'a' * 16}")
 
+  def test_the_hello_carries_our_pick(self):
+    self.patch(self.parts.models, 'hello_pick', return_value={'ref': 'f' * 40, 'age_s': 5.0})
+    link.open_link(self.parts, self.link)
+    self.client.hello.assert_called_once_with(timeout=10.0, pick={'ref': 'f' * 40, 'age_s': 5.0})
+
+  def test_a_newer_pick_on_the_server_is_what_drives_and_is_ours_now(self):
+    # picked on the Jetson's web page while parked: it drives at the next join
+    theirs = {'name': 'Cinque Terre V3', 'ref': 'e' * 40, 'oid': 'e' * 64, 'size': 99}
+    self.parts.models.selected_model.side_effect = [dict(self.ENTRY), theirs]
+    adopt = self.patch(self.parts.models, 'adopt')
+    link.open_link(self.parts, self.link)
+    adopt.assert_called_once_with()
+    self.assertEqual(self.ensure.call_args.args[2:4], ('e' * 64, 99))
+    self.assertEqual(self.ensure.call_args.kwargs['ref'], 'e' * 40)
+
+  def test_only_the_jetson_is_asked_to_download_the_pick(self):
+    # the pick, when neither end has it, the Jetson fetches itself; a
+    # stand-in is a model it has
+    link.open_link(self.parts, self.link)
+    self.assertTrue(self.ensure.call_args.kwargs['fetch'])
+    self.patch(self.parts.spec, 'ready_spec', return_value=mock.Mock(sha256='b' * 64, nbytes=123))
+    self.patch(self.parts.models, 'name_for', return_value='Cinque Terre V3')
+    link.open_link(self.parts, self.link)
+    self.assertFalse(self.ensure.call_args.kwargs['fetch'])
+
   def test_the_last_model_built_drives_while_the_pick_is_not_ready(self):
     # by design, not the small model. No upload and no
     # build here: either would cost the model that is steering
@@ -409,9 +434,10 @@ class BuildingOnroad(OpenpilotTest):
     link.open_link(self.parts, self.link)   # and nothing raised
 
   def test_bytes_neither_end_has_are_a_parked_job(self):
-    # Downloading a gigabyte is the one part of provisioning that needs the
-    # internet, and it is not something to start mid-drive. The link is fine:
-    # closing it would cost a gadget bounce per retry for the whole drive
+    # A Jetson that could not download the pick itself leaves it to the
+    # comma, and a gigabyte on the comma is not something to start mid-drive.
+    # The link is fine: closing it would cost a gadget bounce per retry for
+    # the whole drive
     from jetlink.client import EngineMissing
     self.ensure.side_effect = EngineMissing('no engine')
     self.link.client = self.client

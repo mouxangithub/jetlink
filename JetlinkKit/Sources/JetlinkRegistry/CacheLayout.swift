@@ -32,6 +32,8 @@ public struct CacheLayout: Sendable, Equatable {
   /// Beside the caches rather than in them: it describes the server, not an
   /// artifact.
   public var lastLoadedURL: URL { root.appending(path: "last-loaded.json") }
+  /// The big model picked last, here or on the comma (JetlinkServer's PickStore).
+  public var pickURL: URL { root.appending(path: "pick.json") }
 
   /// Where the server looks for a model's ONNX. The identity arrives from the
   /// peer and becomes a path, so anything but a digest is refused.

@@ -74,7 +74,14 @@ final class CountingRegistry: ModelRegistry, @unchecked Sendable {
     return nil
   }
 
-  func fetch(_ refOrSHA256: String, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws -> URL {
+  func name(for sha256: String) -> (name: String?, ref: String?) {
+    called("name")
+    return (nil, nil)
+  }
+
+  func fetch(sha256: String, size: Int64, progress: @escaping @Sendable (Double) -> Void, shouldStop: @escaping @Sendable () -> Bool) async throws
+    -> URL
+  {
     called("fetch")
     throw TestError("no network here")
   }
