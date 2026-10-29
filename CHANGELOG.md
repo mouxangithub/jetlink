@@ -1,4 +1,15 @@
 <!-- Each release: a "Jetlink vX.Y.Z" heading underlined with =, newest first. A release that changes the fork contract ends with a **Forks** group (docs/publishing.md). -->
+Jetlink v0.8.11
+===============
+**Models**
+* Allow model selection from the comma or the Jetlink app without redownloading the model on each device.
+
+**General Updates & Fixes**
+* **Update the comma and the app:** either can go first. zoompilot's `danger-unstable` branch has the comma's side.
+
+**Forks**
+* API stays 3. New: the optional `Keys.select`, the param jetlink writes a ref to when a newer pick was made on the server (sunnypilot's `ModelManager_DownloadRef`). Without it, or without a model picker, the server's pick still drives.
+
 Jetlink v0.8.10
 ===============
 **General Updates & Fixes**
