@@ -1,4 +1,15 @@
 <!-- Each release: a "Jetlink vX.Y.Z" heading underlined with =, newest first. A release that changes the fork contract ends with a **Forks** group (docs/publishing.md). -->
+Jetlink v0.8.12
+===============
+**Models**
+* A fork whose model list knows a model only by its ONNX file, such as StarPilot, can pick the big model on the comma, and its list shows a model picked in the Jetlink app.
+
+**General Updates & Fixes**
+* Fixed the Jetson's web page, which did not load in v0.8.11. **Update the Jetson.**
+
+**Forks**
+* API stays 3. New: the big-model pick may name its model by the ONNX's hash, `{sha256, displayName}`; jetlink sizes it from comma's LFS servers. With `Keys.big_model` and no catalog, a newer pick made on the server is written into that param.
+
 Jetlink v0.8.11
 ===============
 **Models**
