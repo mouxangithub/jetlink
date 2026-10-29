@@ -864,7 +864,7 @@ function drawModels() {
   }
   const shas = [...new Set([...inv.models.map(m => m.sha256), ...inv.artifacts.map(a => a.sha256)])];
   if (!shas.length) {
-    list.innerHTML = '<div class="empty">No models yet. Pick one from the library, or the comma's pick is downloaded when it connects.</div>';
+    list.innerHTML = '<div class="empty">No models yet. Pick one from the library, or the comma\'s pick is downloaded when it connects.</div>';
     return;
   }
   const e = S.engine || {};
