@@ -9,10 +9,8 @@ takes, which one a proxy takes, and how the candidates are ordered.
 """
 from __future__ import annotations
 
-import pytest
-
 from jetlink.registry import sources
-from jetlink.registry.sources import (clear_cache, hf_mirror_candidates, jsdelivr_candidates, probe_sorted,
+from jetlink.registry.sources import (clear_cache, jsdelivr_candidates, probe_sorted,
                                       proxy_candidates, raw_to_hf_mirror, raw_to_jsdelivr)
 
 RAW = 'https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v25.json'

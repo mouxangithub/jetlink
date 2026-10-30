@@ -227,7 +227,6 @@ def probe_sorted(urls: list[str], timeout: float = PROBE_TIMEOUT, budget: float 
       to_probe.append(index)
 
   if to_probe:
-    deadline = time.monotonic() + budget
     # one measurement per host; the URLs sharing it inherit the result
     first_by_host: dict[str, int] = {}
     for index in to_probe:
