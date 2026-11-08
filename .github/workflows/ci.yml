@@ -511,3 +511,21 @@ jobs:
               --notes "$NOTES" --target "$GITHUB_SHA" "$APK" "$APP" "${SERVERS[@]}"
           fi
 
+      - name: Publish the CNB release
+        env:
+          # a CNB access token with repo-contents read/write (repo settings
+          # -> Secrets and variables -> Actions); without it the step skips,
+          # so a fork without a CNB mirror stays green
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          CNB_REPO: mouxancnb/jetlink
+          TARGET_SHA: ${{ github.sha }}
+          TAG: ${{ needs.android.outputs.tag }}
+        run: |
+          # The Android app's update feed lives on CNB: the updater lists
+          # this repo's releases there and installs the APK asset with this
+          # build's tag (android/.../update/CnbReleases.kt).
+          [ -n "$CNB_TOKEN" ] || { echo "skip: CNB_TOKEN not configured"; exit 0; }
+          APK="$(find dist -maxdepth 2 -name '*.apk' -print -quit)"
+          [ -n "$APK" ] || { echo "error: no APK in dist" >&2; exit 1; }
+          bash scripts/cnb-publish-release.sh "$TAG" "$APK"
+
