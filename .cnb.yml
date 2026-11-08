@@ -105,6 +105,32 @@
 
         # gradle 分发包走腾讯镜像
         sed -i 's|https://services.gradle.org|https://mirrors.cloud.tencent.com/gradle|' android/gradle/wrapper/gradle-wrapper.properties
+        # Maven Central 对 CNB 出口 IP 限流（429），init 脚本把仓库镜像前置
+        mkdir -p "$HOME/.gradle/init.d"
+        cat > "$HOME/.gradle/init.d/01-mirrors.gradle" <<'EOF'
+beforeSettings { settings ->
+  settings.pluginManagement {
+    repositories {
+      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
+      maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
+    }
+  }
+  try {
+    settings.dependencyResolutionManagement.repositories {
+      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
+      maven { url = uri('https://maven.aliyun.com/repository/public') }
+    }
+  } catch (Exception ignored) {}
+}
+projectsLoaded {
+  rootProject.buildscript {
+    repositories {
+      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
+      maven { url = uri('https://maven.aliyun.com/repository/public') }
+    }
+  }
+}
+EOF
         cd android
         ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease -Pjetlink.prebuiltSwift="$PWD/../swift-out"
         ls -la app/build/outputs/apk/release/
