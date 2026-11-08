@@ -1,0 +1,7 @@
+branch:
+  - reg: ^(cn|main)$
+buttons:
+  - name: 打包 Android APK
+    description: 手动运行 Android APK 打包流水线
+    event: web_trigger_build_apk
+    isDefault: true
