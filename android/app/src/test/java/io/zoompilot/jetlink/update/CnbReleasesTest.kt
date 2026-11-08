@@ -128,7 +128,7 @@ class CnbReleasesTest {
         assertEquals(2, list.size)
         assertEquals("cn-abc1234", list[0].tag_name)
         assertNotNull(CnbReleases().apk(list[0]))
-        // the newest first: a cn prerelease the updater should see
+        // the newest first: a cn release the updater should see
         assertEquals("Jetlink-android.apk", CnbReleases().apk(list[0])?.name)
     }
 }

@@ -42,14 +42,14 @@ RID="$(api GET "/-/releases/tags/${TAG}" 2>/dev/null | jsonget id 2>/dev/null ||
 if [ -z "$RID" ]; then
   TARGET="${TARGET_SHA:-$(git rev-parse HEAD 2>/dev/null || echo cn)}"
   TITLE="Jetlink cn ${TAG}"
-  NOTES="Builds of the cn branch, for testing. The Android APK is signed with the release key, so it installs over an earlier build; the app's updater compares this tag."
+  NOTES="Builds of the cn branch. The Android APK is signed with the release key, so it installs over an earlier build; the app's updater compares this tag."
   RID="$(api POST "/-/releases" \
-    "{\"tag_name\":\"${TAG}\",\"name\":\"${TITLE}\",\"prerelease\":true,\"body\":\"${NOTES}\",\"target_commitish\":\"${TARGET}\"}" \
+    "{\"tag_name\":\"${TAG}\",\"name\":\"${TITLE}\",\"prerelease\":false,\"body\":\"${NOTES}\",\"target_commitish\":\"${TARGET}\"}" \
     2>/dev/null | jsonget id 2>/dev/null || true)"
   if [ -z "$RID" ]; then
     # the commit may not exist on the CNB mirror yet; tag the branch instead
     RID="$(api POST "/-/releases" \
-      "{\"tag_name\":\"${TAG}\",\"name\":\"${TITLE}\",\"prerelease\":true,\"body\":\"${NOTES}\",\"target_commitish\":\"cn\"}" \
+      "{\"tag_name\":\"${TAG}\",\"name\":\"${TITLE}\",\"prerelease\":false,\"body\":\"${NOTES}\",\"target_commitish\":\"cn\"}" \
       | jsonget id)"
   fi
 fi

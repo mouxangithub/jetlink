@@ -23,7 +23,7 @@ class CnbReleases(
 ) {
     /**
      * The newest [perPage] releases. Unlike the "latest" endpoint the list
-     * sees the cn-branch prereleases, which is what the updater compares its
+     * sees the cn-branch builds, which is what the updater compares its
      * build tag with.
      */
     fun list(perPage: Int = 5): List<GithubRelease> {
