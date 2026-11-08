@@ -34,7 +34,7 @@
     # ---------- 阶段 1：Swift server for Android（swift 容器） ----------
     - name: build libjetlink.so
       script: |
-        set -euo pipefail
+        set -e
         sed -i 's|http://archive.ubuntu.com|https://mirrors.cloud.tencent.com|g; s|http://security.ubuntu.com|https://mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/ubuntu.sources
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends ca-certificates curl unzip >/dev/null
@@ -72,7 +72,7 @@
     - name: build APK (gradle)
       image: eclipse-temurin:21
       script: |
-        set -euo pipefail
+        set -e
         sed -i 's|http://archive.ubuntu.com|https://mirrors.cloud.tencent.com|g; s|http://security.ubuntu.com|https://mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/ubuntu.sources
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends ca-certificates curl unzip git >/dev/null
@@ -117,4 +117,7 @@
   push:
     - *build-android
   web_trigger_build_apk:
+    - *build-android
+  # API 触发（cnb build start-build --event api_trigger_build_apk）
+  api_trigger_build_apk:
     - *build-android
