@@ -105,32 +105,35 @@
 
         # gradle 分发包走腾讯镜像
         sed -i 's|https://services.gradle.org|https://mirrors.cloud.tencent.com/gradle|' android/gradle/wrapper/gradle-wrapper.properties
-        # Maven Central 对 CNB 出口 IP 限流（429），init 脚本把仓库镜像前置
+        # Maven Central 对 CNB 出口 IP 限流（429），init 脚本把仓库镜像前置。
+        # 注意：.cnb.yml 的块标量里不能放顶格 heredoc，用 echo 逐行生成。
+        M="$HOME/.gradle/init.d/01-mirrors.gradle"
         mkdir -p "$HOME/.gradle/init.d"
-        cat > "$HOME/.gradle/init.d/01-mirrors.gradle" <<'EOF'
-beforeSettings { settings ->
-  settings.pluginManagement {
-    repositories {
-      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
-      maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }
-    }
-  }
-  try {
-    settings.dependencyResolutionManagement.repositories {
-      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
-      maven { url = uri('https://maven.aliyun.com/repository/public') }
-    }
-  } catch (Exception ignored) {}
-}
-projectsLoaded {
-  rootProject.buildscript {
-    repositories {
-      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }
-      maven { url = uri('https://maven.aliyun.com/repository/public') }
-    }
-  }
-}
-EOF
+        {
+          echo "beforeSettings { settings ->"
+          echo "  settings.pluginManagement {"
+          echo "    repositories {"
+          echo "      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }"
+          echo "      maven { url = uri('https://maven.aliyun.com/repository/gradle-plugin') }"
+          echo "    }"
+          echo "  }"
+          echo "  try {"
+          echo "    settings.dependencyResolutionManagement.repositories {"
+          echo "      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }"
+          echo "      maven { url = uri('https://maven.aliyun.com/repository/public') }"
+          echo "    }"
+          echo "  } catch (Exception ignored) {}"
+          echo "}"
+          echo "projectsLoaded {"
+          echo "  rootProject.buildscript {"
+          echo "    repositories {"
+          echo "      maven { url = uri('https://mirrors.cloud.tencent.com/nexus/repository/maven-public/') }"
+          echo "      maven { url = uri('https://maven.aliyun.com/repository/public') }"
+          echo "    }"
+          echo "  }"
+          echo "}"
+        } > "$M"
+        echo "--- gradle init script ---"; cat "$M"
         cd android
         ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease -Pjetlink.prebuiltSwift="$PWD/../swift-out"
         ls -la app/build/outputs/apk/release/
