@@ -77,9 +77,12 @@
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends ca-certificates curl unzip git >/dev/null
 
-        # Android SDK 命令行工具（缓存命中即跳过）
+        # Android SDK 命令行工具（缓存命中即跳过）；AGP 会在 gradle 里自动下载
+        # platform/build-tools，这里只接受许可即可——旧版 cmdline-tools 的仓库
+        # 清单可能没有 platforms;android-37，显式安装反而会 404
         if [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
-          curl -fsSL -o /tmp/clt.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+          curl -fsSL -o /tmp/clt.zip "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip" \
+            || curl -fsSL --retry 3 -o /tmp/clt.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
             || curl -fL --retry 3 -o /tmp/clt.zip "https://dl.google.cn/android/repository/commandlinetools-linux-11076708_latest.zip"
           unzip -q /tmp/clt.zip -d /tmp/clt
           mkdir -p "$ANDROID_HOME/cmdline-tools"
@@ -88,7 +91,6 @@
           echo "Android cmdline-tools cached"
         fi
         yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "platforms;android-37"
 
         # 发布签名（未配置时 gradle 自动用 debug key）
         if [ -n "${ANDROID_KEYSTORE_BASE64:-}" ]; then
